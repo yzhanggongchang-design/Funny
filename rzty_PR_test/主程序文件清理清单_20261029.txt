@@ -1,0 +1,436 @@
+Beltlink 主程序文件清理清单
+生成日期：2026-10-29
+工程路径：D:\Guodianyang\beltlink-remote-64b5f32-20260814\beltlink-remote-64b5f32-20260814
+
+说明：
+1. 本文档只是整理和判断，没有删除、移动任何工程文件。
+2. 当前工程目录不是 Git 仓库，因此旧文件一旦删除，不能依靠 Git 恢复。
+3. 建议先清理“可以直接删除”的构建产物，再处理备份。
+
+
+======================================================================
+一、最简单的结论
+======================================================================
+
+【可以直接删除，风险低】
+
+1. 五个旧固件构建目录：约 826.47 MiB
+
+   firmware\beltlink_bp\build
+   firmware\beltlink_bp\build_adc_network_55
+   firmware\beltlink_bp\build_phy_verify_55
+   firmware\beltlink_bp\build-network
+   firmware\beltlink_bp\build-pinmap-check
+
+   原因：这些都是旧编译结果，不是源码，可以重新生成。
+
+2. 两个 Host 测试构建缓存：体积很小
+
+   firmware\test\build_host
+   firmware\test\build_mic_gain
+
+   原因：里面只有 CMake 缓存和空测试日志，没有需要保留的测试结果。
+
+3. main 源码目录中误生成的 29 个构建文件：约 26.08 MiB
+
+   位置：firmware\beltlink_bp\main
+
+   只需要保留下面三个正式文件：
+
+   beltlink_bp.c
+   config.json
+   CMakeLists.txt
+
+   以及暂时保留所有 *.bak 文件。
+
+   除上述文件外，main 目录中的这些类型都是构建产物：
+
+   *.elf
+   *.bin
+   *.map
+   build.ninja
+   CMakeCache.txt
+   compile_commands.json
+   .ninja_deps
+   .ninja_log
+   flash_*_args
+   project_description.json
+   config.env
+   config.json.S
+   x509_crt_bundle.S
+   ldgen_libraries*
+   kconfigs*
+
+   原因：main\CMakeLists.txt 明确只编译 beltlink_bp.c，并嵌入 config.json。
+   上述文件不会作为主程序源码参与编译。
+
+
+【暂时不要删除】
+
+1. 当前最新构建目录：
+
+   firmware\beltlink_bp\build_main
+
+   大小：约 248.55 MiB
+   当前固件：build_main\beltlink_bp.bin
+   SHA-256：0364680B937411376C15337910DE5904AD7F05C88727124EFC9007973432392C
+
+   说明：它也可以重新编译生成，但当前仍是最新可烧录版本。
+   等确认固件已经另存或设备验证完成后，再决定是否删除。
+
+2. 最近的关键备份：
+
+   firmware\backup_history\20261028-pre-startup-image-3s
+   firmware\backup_history\20261028-pre-independent-channel-mute
+   backup_server_before_downlink_meters_20261022-153501
+
+3. 所有当前正式源码和配置文件。
+
+
+======================================================================
+二、必须保留的主程序内容
+======================================================================
+
+【ESP32-P4 主工程】
+
+firmware\beltlink_bp\CMakeLists.txt
+firmware\beltlink_bp\dependencies.lock
+firmware\beltlink_bp\sdkconfig
+firmware\beltlink_bp\sdkconfig.defaults
+
+firmware\beltlink_bp\main\CMakeLists.txt
+firmware\beltlink_bp\main\beltlink_bp.c
+firmware\beltlink_bp\main\config.json
+
+
+【主程序组件】
+
+firmware\components\audio_io
+作用：I2S 与音频输入输出通道。
+
+firmware\components\board
+作用：GPIO 和硬件引脚定义的唯一来源。
+
+firmware\components\bp_config
+作用：解析和检查 config.json。
+
+firmware\components\ctrl_session
+作用：服务器控制会话、组订阅和状态同步。
+
+firmware\components\drift_corrector
+作用：音频采样漂移修正。
+
+firmware\components\hmi
+作用：LCD、编码器、菜单、启动图和 UI API。
+说明：startup_image.c 和 startup_image.h 是当前启动图片资源，不能删除。
+
+firmware\components\jitter_buffer
+作用：下行音频抖动缓冲。
+
+firmware\components\mic_relay
+作用：话筒中继和路由辅助。
+
+firmware\components\net_link
+作用：以太网 PHY、DHCP 和链路状态。
+
+firmware\components\protocol_codec
+作用：Beltlink 协议编解码。
+
+firmware\components\sd_source
+作用：SD/WAV 音频源和帧环。
+说明：当前主程序仍声明依赖，不能直接删除。
+
+firmware\components\tlv320aic3204
+作用：Codec 初始化、寄存器配置、音量和静音控制。
+
+firmware\components\tx_watchdog
+作用：上行发送状态监控。
+
+firmware\components\udp_transport
+作用：UDP 音频和控制帧收发。
+
+
+【完整产品工程中的其他正式内容】
+
+server
+作用：服务器程序。它不进入 ESP32 固件，但属于产品工程。
+
+shared\protocol
+作用：服务器和固件共享的协议定义。
+
+tools
+作用：工程辅助工具和脚本。
+
+firmware\README.md
+firmware\PHY迁移审查报告.txt
+作用：说明和硬件迁移资料，建议保留或归档。
+
+
+======================================================================
+三、六个固件构建目录的判断
+======================================================================
+
+1. firmware\beltlink_bp\build
+   大小：约 212.17 MiB
+   日期：2026-10-14
+   判断：旧构建，可以删除。
+
+2. firmware\beltlink_bp\build_adc_network_55
+   大小：约 191.11 MiB
+   日期：2026-10-15
+   判断：旧构建，没有最终 beltlink_bp.bin，可以删除。
+
+3. firmware\beltlink_bp\build_main
+   大小：约 248.55 MiB
+   日期：2026-10-28
+   判断：最新构建，建议暂时保留。
+
+4. firmware\beltlink_bp\build_phy_verify_55
+   大小：约 3.32 MiB
+   日期：2026-10-14
+   判断：PHY 验证残留，没有最终固件，可以删除。
+
+5. firmware\beltlink_bp\build-network
+   大小：约 209.04 MiB
+   日期：2026-10-12
+   判断：旧网络版本构建，可以删除。
+
+6. firmware\beltlink_bp\build-pinmap-check
+   大小：约 210.83 MiB
+   日期：2026-10-11
+   判断：旧引脚检查构建，可以删除。
+
+
+======================================================================
+四、测试程序的判断
+======================================================================
+
+测试目录：firmware\test
+全部内容约 0.21 MiB。
+有效测试源码约 0.19 MiB，体积很小，建议保留。
+
+这些测试不进入 ESP32 固件，只在电脑上使用普通 CMake/GCC 测试组件逻辑。
+
+【建议保留的测试】
+
+test_protocol_codec.c
+作用：检查协议编解码。
+
+test_jitter_buffer.c
+作用：检查抖动缓冲。
+
+test_drift_corrector.c
+作用：检查漂移修正。
+
+test_drift_jitter_loop.c
+作用：检查抖动缓冲与漂移修正闭环。
+
+test_ctrl_session.c
+作用：检查控制会话。
+
+test_bp_config.c
+作用：检查 config.json 解析和限制。
+
+test_wav_reader.c
+作用：检查 WAV 文件读取。
+
+test_frame_ring.c
+作用：检查帧环缓存。
+
+test_ui_api.c
+作用：检查 UI 状态、通道选择和静音逻辑。
+说明：与近期 CH1/CH2 独立控制修改直接相关，建议保留。
+
+test_tx_watchdog.c
+作用：检查发送看门狗。
+
+test_ui_console.c
+作用：检查串口命令解析。
+
+test_board_pins.py
+作用：比对代码引脚和硬件文档。
+
+test_board_assumptions.py
+作用：检查换板相关硬件假设。
+
+test_protocol_header_cpp.cpp
+作用：检查共享协议头能否被 C++17 使用。
+
+ui_sim.c
+作用：在电脑上模拟 UI API。
+判断：建议保留；如果以后确定完全不用电脑模拟 UI，可以单独删除。
+
+
+【测试目录中可以删除或归档的内容】
+
+firmware\test\build_host
+firmware\test\build_mic_gain
+判断：可以删除，都是可重新生成的构建缓存。
+
+firmware\test\test_ui_api.c.pre-audio-input-j3-20261020.bak
+判断：旧测试快照，可以归档或删除。
+
+
+======================================================================
+五、散落在源码目录中的 54 个 .bak
+======================================================================
+
+总大小：约 1.46 MiB。
+
+这些文件没有被当前 CMake 编译，但因为工程没有 Git，不建议立即全部删除。
+
+建议处理方法：
+
+1. 新建一个统一归档目录或 ZIP 文件。
+2. 将所有 *.bak 放入归档。
+3. 生成文件名和 SHA-256 清单。
+4. 确认归档可以打开后，再从源码目录删除这些 *.bak。
+
+主要分布：
+
+firmware\beltlink_bp\main\beltlink_bp.c.pre-*.bak
+数量：7；内容：旧主程序入口。
+
+firmware\beltlink_bp\main\config.json.pre-*.bak
+数量：3；内容：旧设备配置。
+
+firmware\components\audio_io\audio_io.c.pre-*.bak
+数量：5；内容：旧音频路径。
+
+firmware\components\audio_io\include\audio_io.h.pre-*.bak
+数量：5；内容：旧音频接口。
+
+firmware\components\hmi 下的 *.bak
+数量：17；内容：旧 UI、菜单、编码器和 LCD 绘制程序。
+
+firmware\components\tlv320aic3204 下的 *.bak
+数量：15；内容：旧 Codec 寄存器配置和接口。
+
+firmware\test\test_ui_api.c.pre-*.bak
+数量：1；内容：旧测试快照。
+
+
+======================================================================
+六、备份目录的判断
+======================================================================
+
+当前一共有 26 个备份目录，目录备份加散落 .bak 总计约 15 MiB。
+备份占用并不大，不需要为了空间立即全部删除。
+
+
+【建议必须保留】
+
+1. firmware\backup_history\20261028-pre-startup-image-3s
+   作用：当前 3 秒启动图修改前的完整回退点。
+   有 BACKUP_INFO.md。
+
+2. firmware\backup_history\20261028-pre-independent-channel-mute
+   作用：CH1/CH2 独立静音修改前的关键回退点。
+   有说明文件。
+
+3. backup_server_before_downlink_meters_20261022-153501
+   作用：服务器下行电平功能修改前的回退点。
+   在服务器版本正式固化前保留。
+
+
+【建议保留源码，但可以删除其中大文件】
+
+firmware\backup_history\20261027-pre-logo-restored
+
+该备份总大小约 9.69 MiB，其中：
+
+beltlink_bp.elf：约 8.83 MiB，可以删除。
+beltlink_bp.bin：约 0.66 MiB，若不需要直接回刷该历史版本，可以删除。
+
+建议保留：
+
+BACKUP_INFO.md
+beltlink_bp.c
+UI.c
+UI.h
+ui_runtime.c
+ui_display.c
+ui_display.h
+
+
+【建议压缩归档，确认后再考虑删除】
+
+backup_dac_force_mute_20261020
+backup_dac_mute_p0r64_20261020
+backup_mic_gain_menu_20261020
+firmware\backup_adaptive_control_explicit_20261020
+firmware\backup_codec_network_dac_20261016-210807
+firmware\backup_dac_iir_24k_10k_20261020-142809
+firmware\backup_downlink_meter_volume_20261016-214158
+firmware\backup_dynamic_mic_2v5_20261019
+firmware\backup_iir_coeff_512613_ddb3d8_20261020
+firmware\backup_iir_readback_fix_20261020
+firmware\backup_log_cleanup_20261019-164501
+firmware\backup_mic_pga_20db_20261019-173455
+firmware\backup_mic_single_ended_20261019
+firmware\backup_mic_type_sidetone_menu_20261026
+firmware\backup_sidetone_volume_remove_modify_ip_20261026
+firmware\backup_udp_transport_timeout_once_20261019-201500
+firmware\backup_history\20261027-175000-current-logo-lcd-debug
+firmware\backup_history\20261027-pre-local-mic-gain
+firmware\backup_history\20261027-pre-remove-audio-input
+firmware\backup_history\20261028-pre-backlight-menu
+firmware\backup_history\20261028-pre-encoder-channel-tx-toggle
+firmware\backup_history\20261028-pre-restore-audio-input-menu
+
+说明：
+这些是不同功能修改前的历史点。由于当前没有 Git，建议先打包归档，不建议直接全部删除。
+
+
+======================================================================
+七、推荐的实际清理顺序
+======================================================================
+
+第一步：删除五个旧固件构建目录。
+预计释放：约 826.47 MiB。
+
+第二步：清理 main 目录中误生成的 29 个构建文件。
+预计释放：约 26.08 MiB。
+
+第三步：删除 test\build_host 和 test\build_mic_gain。
+
+第四步：把 54 个 *.bak 集中制作 ZIP 和 SHA-256 清单。
+归档确认无误后，再从源码目录删除。
+
+第五步：保留最近关键备份，把其他旧备份统一压缩。
+
+第六步：设备和当前固件验证完成后，再决定是否删除 build_main。
+如果删除 build_main，还可以额外释放约 248.55 MiB。
+
+
+======================================================================
+八、预计可释放空间
+======================================================================
+
+只清理低风险项目：
+
+五个旧构建目录：约 826.47 MiB
+main 中误生成构建文件：约 26.08 MiB
+测试构建缓存：体积很小
+
+合计约：852.55 MiB
+
+如果以后连最新 build_main 也删除：
+
+总计约：1.08 GiB
+
+
+======================================================================
+九、执行前最后确认
+======================================================================
+
+在实际删除前，应再次确认：
+
+[ ] 当前 build_main\beltlink_bp.bin 是否需要留作烧录。
+[ ] 最近启动图版本是否已通过开发板测试。
+[ ] CH1/CH2 独立静音功能是否已通过测试。
+[ ] 服务器修改是否已部署并有可恢复版本。
+[ ] 54 个 *.bak 是否已经压缩并生成校验清单。
+[ ] 关键备份是否已复制到工程目录之外。
+
+完成以上确认后，再执行删除操作。

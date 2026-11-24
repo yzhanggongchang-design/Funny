@@ -1,0 +1,234 @@
+ADIN2111 / POE_BELTPACK_V4.0 系统可行性与工作清单
+日期：2026-11-19
+范围：仅评估主板、主程序和整机网络；不分析前面板、上面板、转接板。
+状态：基于 PDF 图纸、ADIN2111 Rev.B 数据手册和当前主程序的桌面审查；没有修改固件、编译、烧录或真机验证。
+
+一、先给结论
+
+1. 在“每个腰包两侧各有一条独立 10BASE-T1L 链路、服务器侧有 10BASE-T1L 网关、总线带宽及供电满足规模要求”的前提下，ADIN2111 适合做串接节点。它自带两个 PHY、MAC 和二层交换机，ESP32-P4 通过 SPI 收发本机帧，端口间由芯片转发。现有 UDP 音频/控制协议原则上可保留。
+2. 这不是 IP101 的同类 PHY 替换。旧方案是 ESP32-P4 内置 EMAC + RMII + IP101；V4.0 是 SPI + ADIN2111 内置 MAC/交换机 + 两个 10BASE-T1L 端口。必须更换网卡底层驱动、双端口状态管理与恢复逻辑，原有 MDIO/ANAR 限 10BASE-T 代码不能沿用。
+3. 已收到 D1：继电器采用 ADI EVAL-ADIN2111D1Z 的失电旁路思路。原文仅凭 PDF 图元作出的“吸合时两 PHY 端口短到同一对线、属于硬件阻断项”判断证据不足，撤回。ADI 开发板用户指南明确描述：线圈得电时两端分别接两个 PHY，失电时两 SPE 端口直连。V4 主板仍需以 Altium 网表和样机通断测试确认极性、接线及旁路链路质量，但不能把 PDF 的视觉疑点当成已证实故障。
+4. D2/D3 明确为四条独立单链、每链最多 16 台，总计不少于 64 台。现有音频协议每台连续下行约 0.532 Mb/s（含线缆上开销），一条 16 台链靠近服务器段约 8.512 Mb/s，占 10 Mb/s 线速约 85.12%；平均带宽尚可容纳，但余量有限，必须测试突发、FIFO、控制报文和音频丢包。四条链各自通过 SPE↔RJ45 网关接主交换机；不能把 64 台总下行 34.048 Mb/s 错算到一条 SPE 链上。端口间转发由 ADIN2111 芯片完成，并非 16 台所有帧都穿过每台 MCU 的 SPI。
+
+二、主板已核对的事实与图纸疑点
+
+依据 POE_BELTPACK_V4.0.pdf 主板控制页（PDF 第 5 页）和主板数据传输页（第 7 页）：
+
+• U11 是 ADIN2111BCPZ。ESP32-P4 GPIO28=PHY_CS，GPIO29=PHY_SDI，GPIO30=PHY_SCLK，GPIO31=PHY_SDO，GPIO34=PHY_RESET，GPIO45=PHY_INT，GPIO46=GPIO_RELAY2。显示屏使用另一组 GPIO22～24 的 SPI 接线；固件当前占用 SPI2_HOST，ADIN 建议规划独立 SPI3_HOST，并以实际 P4 引脚矩阵/外设占用核定。
+• X2 给 U11 pin23 提供 25 MHz；U11 pin22 CLK25_REF 回接 pin1 P2_CLK_IN。它不是旧 RMII 的 50 MHz 参考时钟。上电后应先验证时钟、复位和 SPI 标识寄存器，再放行网络。
+• R44=4.7 kΩ 上拉 P1_SWPD_EN，使 Port 1 复位后不进入软件掉电；Port 2 的 SWPD 脚有内部上拉。R48/R49=10 kΩ 将两个 TX2P4_EN 拉低，允许 1.0 Vpp 和 2.4 Vpp 两种能力，AVDD_H 实际接 3.3 V。图纸文字“默认 1.0 V，软件改 2.0 V”不准确：高档是 2.4 Vpp；引脚为高时会从硬件上禁用高档，软件无法恢复；引脚为低仅表示具备高档能力，最终电平由自协商广告与对端共同决定。
+• P1_LED_0/SPI_CFG1 内部上拉，P2 未参与 SPI 模式；SDO/SPI_CFG0 的 R42 为 NC，脚内部下拉。按当前装配，预期是“通用 SPI + CRC8”，应在样机复位后用读寄存器确认。不能在此硬件上未经改阻值/重验直接按 OPEN Alliance 数据分块协议写驱动。25 MHz 是手册给出的 SPI 时钟上限（最小周期 40 ns），实际稳定频率需示波器和误包测试。
+• U13 为双刀双掷继电器，线圈由 GPIO46→Q5 控制，R53 下拉使 MCU 未驱动时线圈释放。D1 确认其设计目标与 ADI 开发板相同：吸合时 Port 1、Port 2 各接独立线段，主 DCDC 失效、线圈释放时两外部 SPE 差分线直接旁路。原先根据 PDF 图元提出的“吸合短接”推断已撤回；保留样机网表和通断测量作为验证。还要在目标长度及带电供电条件下验证失电旁路后的真实 Link，而不只是验证线圈动作。
+• J1/J2 的数据对上还叠加 48 V 供电；L4/L5 引出 VIN+_48V/VIN-_48V，主板电源页（第 3 页）的 LM5069 与 48 V→5 V 模块给本机取电。继电器放在数据链路路径，供电通道需单独验证断电时的连续性、极性、浪涌与整串压降。图纸元件值不能证明线缆/连接器/共模电感/继电器已经满足整串电流和带电切换额定值。
+
+三、整机架构的必要条件与影响
+
+1. 对端兼容：D2/D3 确认 IP101 不会出现在链内，服务器 48 V 注入，每链通过 SPE↔RJ45 网关进主交换机，按线缆长度在链中增加电源插入器。网关的 SPE 端须支持 10BASE-T1L、所需 2.4 Vpp 协商和链上供电隔离；普通 RJ45 不能直接接 SPE 差分线。先用一台服务器侧网关+一台腰包打通 DHCP、注册、音频，再扩成链。
+2. 线长：ADI 标称“最长 1700 m”是特定线缆/条件下的能力，不是任意电缆或串接总长保证。按每段实际线缆的插入损耗、回波损耗、阻抗、接头、共模噪声、供电压降与 1.0/2.4 Vpp 档位验收。每个通电交换节点可重新生成下一段信号；某节点失电并旁路后，原本两段被合并，合并后的被动段必须重新满足 T1L 预算。长距离、高噪声时 2.4 Vpp 也必须由两端广告/请求协商成功。
+3. 链式带宽：每个 10BASE-T1L 端口为 10 Mb/s 全双工，16 台持续下行在靠服务器段约 8.512 Mb/s，约占线速 85.12%，高于原文建议的 70% 预算但低于物理线速。这是“需要压测的边界方案”，不能直接宣布不可行或已经可行。四链各有独立 10 Mb/s 段，主交换机侧汇聚约 34.048 Mb/s 的下行音频。上行若有多人同时说话也要单独计算；每级转发、出口仲裁和发包突发可能在平均值未超线速时造成 FIFO 丢包。
+4. 转发/广播：ADIN2111 上电默认丢弃接收帧；要明确配置 host MAC、广播/ARP/DHCP、多播和未知单播的转发规则。简单地把所有未知帧同时送主机和对端会增加 SPI 负载。物理环路会引起二层广播环路，除非另有环保护/阻断方案，首版只按无环的线型拓扑设计。16 个 MAC 过滤项是规则表大小，不等于网络最多 16 台；若用泛洪，需评估广播和 host FIFO 压力。
+5. 继电器：GPIO46 切换时触点有先断后合、抖动和模拟瞬变；至少相邻 PHY 需重新建链和自协商，不能保证音频无感。释放旁路后本腰包脱离网络，下游若拓扑与供电正确也可能经合并线段继续工作；动作瞬间音频包会丢失。若 MCU 死机但 5 V 仍在、继电器仍吸合，下游能否持续转发取决于 U11 的电源、硬件 strap 和交换规则，不能把“MCU 死机”当成“继电器必释放”。应定义继电器吸合条件、看门狗失效安全策略和热切换时序。
+6. 供电：串接的 48 V 功率、电压降、保护器件与共模电感电流额定值须以整串最大台数、最远节点和故障短路条件计算。单个 48 V→5 V 模块标称 6 W 是本机转换能力，不意味着馈电源能带 64 台。数据可达距离与供电可达距离是两项独立验收。
+
+四、硬件工作清单（先于软件样机联调）
+
+H1 导出主板 Altium 原理图/PCB 网表；逐一核对 J1/J2 正负数据线、U13 pin2/3/4/5/6/7、T1/T2、C105～C108。确认吸合时 Port 1 和 Port 2 各自连接一侧、释放时 J1/J2 正负线旁路。ADI 开发板采用相同的继电器目标，不再把 PDF 图元疑点单独判为阻断。
+H2【阻断】画出四链整机线路图：每条链的服务器侧 T1L 网关/48 V 注入器、中途插入器、最多 16 个节点、线缆规格及每段长度和最长旁路合并长度；核查接头防回环极性。
+H3【阻断】计算并实测 48 V 全链功率与压降，检查 L4/L5、J1/J2、U13、TVS、耦合电容和变压器的信号/电压/电流/浪涌及接触可靠性；验证单节点短路和热插拔不会拉垮整串。检查 PoDL 注入/抽取网络与 10BASE-T1L 回波损耗，不把普通 PoE/RJ45 视为直接兼容。
+H4 样机测试 RESET# 的低脉宽与上电稳定时间；测 25 MHz 时钟、3.3 V 与两路内部 1.1 V LDO，检查 SPI_CFG1/0、SWPD_EN、TX2P4_EN 在复位采样瞬间的实测电平。若计划改用 OPEN Alliance SPI，需先修改 SPI_CFG1 的硬件 strap 并按手册处理复用 LED，随后重新验证协议。
+H5 对继电器做独立测试：GPIO 未初始化、正常吸合、软件重启、看门狗、拔电、48 V 瞬断、带流量动作；记录接点抖动、链路失联范围、恢复时间、下游供电和错误包数。定义动作频率上限与故障默认状态。
+H6 采用实际线缆和目标距离，对每一段及旁路合并后的最长段测 1.0/2.4 Vpp 链路、误码/CRC、噪声、电压降、温度和热插拔；仅完成台架短线连通不能确认 1700 m 能力。
+
+五、软件工作清单（主程序路径见末尾）
+
+S1 板级配置：把 board.h 中旧 RMII、MDC/MDIO、PHY 地址、GPIO51 复位的旧板宏迁出当前 V4 路径；登记 GPIO28/29/30/31、GPIO34、GPIO45、GPIO46 及 CS/INT/RESET 有效电平。GPIO21 是音频继电器，不能与 GPIO46 网络旁路继电器混淆。核对 GPIO34/45/46 与旧网卡和其他外设的冲突。
+S2 驱动选择：当前 ESP-IDF 5.5.5 工程没有 ADIN2111 驱动，Espressif 公开附加驱动列表也未列此器件。以 ADI no-OS 驱动作为协议/寄存器参考，做 ESP-IDF SPI master + esp_eth 自定义 MAC/PHY 适配，或实现等价的自定义 esp_netif L2 接入；选择一条经过构建验证的路径。不得把 esp_eth_phy_new_ip101() 仅换一个名字后继续使用内置 EMAC。
+S3 SPI 数据面：D6 已选 OPEN Alliance SPI（OA SPI）。需把样机 SPI_CFG1 strap 改为 OA，按 OA 控制帧和 64 字节数据块实现双向并行收发、DMA、header/footer、RCA/TXC 信用额度、分块重组、FCS 校验、INT 和错误恢复；不可继续使用通用 SPI 的 TX_FSIZE/P1_RX_FSIZE 等数据收发流程。25 MHz 为器件上限，先从较低频率跑通后按波形/误包提升；不要在 GPIO 中断里做长 SPI 事务。芯片内部的端口到端口转发不走 MCU SPI。
+S4 交换机与网络接口：复位后确认 MAC_RST_STATUS/PHYID；设 CONFIG0/CONFIG2、ADDR_FILT 及广播规则、IMASK、最后置 SYNC。对外只创建一个腰包 IP/MAC 身份与 DHCP 客户端，两个物理端口归同一个二层网络；定义主机帧选哪一个端口发送，不能只依赖“任一端口 Link Up”。验证 DHCP 广播和服务器单播能穿过中间节点。
+S5 每 PHY 独立管理：通过 SPI→MDIOACCn 访问固定地址 Port 1=1、Port 2=2 的 Clause 45 寄存器；保留两端自协商，读取各端实际 Link、协商电平和远端能力。更换旧 ANAR/BMCR 的 10BASE-T 设置；配置 1.0/2.4 Vpp 时先确认硬件能力位、写广告/请求位后触发 AN_RESTART。寄存器写入执行读-改-写，Link 锁存低位需连读两次判断当前状态。
+S6 链路恢复：旧 net_link.c 的单一 LINK_UP、PHY_MODE_OK、网络 epoch 和 esp_eth_stop/start 仅适合一个 RMII PHY。改为双端口/服务器可达状态；一侧断线时不能盲目重启整颗 U11 导致另一侧掉线。复位后重写全部交换规则、MAC/过滤表、IRQ 和广告，再恢复 DHCP/注册；区分 SPI 错误、FIFO 阻塞、端口断线、服务器心跳超时和继电器动作。现有发送看门狗调用的全网卡 restart 需换成最小范围恢复。
+S7 继电器控制：启动初期 GPIO46 使线圈释放；确认供电、U11 时钟/ID、交换规则写入成功后吸合，再等待两端建链并验证转发。PHY 在继电器释放时与线段隔离，不能要求“先看到两端 Link Up 再吸合”。固件升级/重启/崩溃期间的继电器状态与整串可用性必须明确；增加动作次数、触发原因、前后链路和音频恢复时间日志。
+S8 项目配置：config.json 当前 force_10baset=true，这是旧 10BASE-T 通告开关，V4 路径应废弃或迁移为新的 T1L 电压/端口策略，不得静默沿用。更新 sdkconfig.defaults、net_link 组件依赖、板级假设检查与文档。LCD 的 SPI2_HOST 继续独立，ADIN 若选 SPI3_HOST 须核验 DMA 与中断优先级，确保 4 ms 音频采集/播放任务不受长 SPI 阻塞。
+S9 服务器/部署：服务器 UDP 协议初期可不变，但需更新接口接入、DHCP 服务和 MAC→BP_ID 映射；确认新 SPI 网卡 MAC 来源稳定且唯一。需要用真实多台流量测服务器侧媒体转换器、主干负载、下行 pacing、音频 PLC、注册恢复及广播规模，不要以单机短线通话推断 64 台可用。
+
+六、优先寄存器清单（ADIN2111 Rev.B；地址均为手册表中地址，不能用旧 IP101 的 MDC/MDIO API 直接访问）
+
+MAC/SPI 空间，32 位寄存器：
+• 只读核验：PHYID 0x01（预期 0x0283BCA1）、MAC_RST_STATUS 0x3B；需要复位时 RESET 0x03。先判定 SPI 模式与 CRC，再操作。
+• 初始化：CONFIG0 0x04（SYNC、TXFCSVE、TXCTE、RXCTE、PROTE、CPS）；CONFIG2 0x06（P1/P2 未知目标转发到对端/host、PORT_CUT_THRU_EN、CRC_APPEND、MSPEED）；IMASK0 0x0C、IMASK1 0x0D；STATUS0 0x08、STATUS1 0x09（部分位 W1C）。CONFIG2 出厂默认虽然开了端口 cut-through，但未知目的帧默认丢弃，仍需配置转发。
+• 目标 MAC 规则：ADDR_FILT_UPRn 0x50～0x6E、ADDR_FILT_LWRn 0x51～0x6F（先写上半再写下半），需要掩码时 ADDR_MSK_UPRn/LWRn 0x70～0x73。至少覆盖本机 MAC、广播、所需多播与转发；规则必须避免把帧错误地同时泛洪给 host 和端口。
+• OA SPI 数据收发：BUFSTS 0x0B 的 TXC/RCA 和每个接收 footer 的额度、状态；OA 数据头 VS[0] 决定发送端口，接收 footer VS[0] 标识来源端口。TX_FSIZE/TX/P1_RX_FSIZE/P2_RX_FSIZE 及 STATUS1 的 P1/P2_RX_RDY 是通用 SPI 路线，本项目 OA 数据面不用。视测量调整 TX_PRI 0x35、TX_THRESH 0x34、FIFO_SIZE 0x3E，不能一开始就盲改 28 kB FIFO 分配。
+• SPI→MDIO 桥：MDIOACC0～7 0x20～0x27；TRDONE 启动/完成、TAERR 错误、ST 选择 Clause 45、PRTAD 取 1 或 2、DEVAD 取 MMD。每次读写须超时和错误处理。
+
+每个 PHY 的 Clause 45 空间（写操作先读-改-写）：
+• MMD 0x1E: CRSM_STAT 0x8818（系统就绪/掉电）；CRSM_SFT_PD_CNTRL 0x8812（仅在硬件上电处于掉电时清除）；CRSM_IRQ_STATUS/MASK 0x0010/0x0020。正常首版不需反复软复位 PHY。
+• MMD 0x07: AN_CONTROL 0x0200（保留 AN_EN=1，必要时置 AN_RESTART）；AN_STATUS 0x0201（AN_COMPLETE、AN_LINK_STATUS，锁存低需连读）；AN_ADV_ABILITY_H 0x0204（bit13 高档能力广告、bit12 高档请求）；AN_LP_ADV_ABILITY_H 0x0207（对端广告）；AN_STATUS_EXTRA 0x8001（协商结果）。这套寄存器替代旧 10BASE-T ANAR/BMCR 策略。
+• MMD 0x01: B10L_PMA_STAT 0x08F7 的 bit12 是高档能力只读位；B10L_PMA_CNTRL 0x08F6 的 bit12 只在关闭自协商时直接选择幅值，正常不要拿它当“软件改 2.4 V”的开关。
+• MMD 0x1F: PHY_SUBSYS_IRQ_STATUS/MASK 0x0011/0x0021，用于定位每端链路事件；诊断时可配合每端 MAC 统计计数器 P1 0xA0～0xAE、P2 0xD0～0xDE 观察 CRC、PHY 错包、FIFO 满和过滤丢弃。只读寄存器与状态位无需“修改”。
+
+七、需要项目组讨论并拍板的问题
+
+D1 已定：U13 参照 EVAL-ADIN2111D1Z，失电将两外部 SPE 差分线旁路。仍待确认样机网表、通断和旁路后实际 Link/供电，不能用继电器触点闭合代替链路验收。
+D2 已定：服务器注入 48 V，按线长在单链中串一个或多个电源插入器；IP101 不入链。待定：网关与电源插入器型号、供电协调、失电时功率透传及单点短路隔离。
+D3 已定：四条独立线链，每链最多 16 台，总计不少于 64 台，各链经 SPE↔RJ45 接主交换机。待定：16 台满载突发、每段最长距离及容许掉包/音频中断阈值。
+D4 已定：目标 2.4 Vpp 以争取更远距离，无额外安规约束。待定：服务器网关和每段对端是否都支持高档、目标线缆及最大单段/旁路合并长度。
+D5 已定：MCU 正常上电后吸合；A/B 切换瞬间继电器会动作。须讨论：虽然本机切换时不需要网络，下游其他腰包仍可能在通话；旁路、重新吸合可能触发两次建链，允许的下游失联窗口是多少？升级供电“保持”由哪个电源路径保证？
+D6 已定：使用 OPEN Alliance SPI，优先高吞吐。须修改 V4 图纸的 SPI_CFG1 strap（当前 PDF 倾向通用 SPI），明确 SPI_CFG0 是否保留保护模式；主机只处理本机收发帧，端口间交换不经过 MCU SPI。
+D7 已定：线型，连接器防回环；测试时禁止人为接成供电冲突的闭环。软件配置按线型泛洪未知单播到另一端。
+D8 已定：继电器面向极少数主电源模块故障。仍须覆盖正常启动、软件重启、A/B 切换与断电等实际触发时序，因为这些动作也会影响邻居链路。
+
+八、建议的分阶段验收门槛
+
+G0 原理图/PCB 网表确认：U13 吸合时两端独立、释放时正确旁路；供电链路与差分信号链路都明确，不能仅凭图纸注释。
+G1 一台样机：读取正确 ID，SPI CRC 无持续错误，两个端口分别与合格 10BASE-T1L 对端建链；记录 1.0/2.4 Vpp 协商状态。
+G2 两台以上串接：DHCP/自动注册/UDP 音频双向正常，主机 MAC 只出现一份，未知帧/广播可达且无环路；各端口统计无持续错包。
+G3 继电器与电源故障：动作/拔电/重启后旁路和下游供电符合设计，记录 Link 重协商、业务恢复及音频断续时间；不能只看 UI 上的“连接”。
+G4 目标规模与距离：按目标线缆、最大单段和旁路合并段、目标同时在线数进行连续压测；服务器侧主干实际利用率、SPI FIFO、丢包、PLC、延迟、48 V 末端电压都满足明确阈值后才可宣布系统方案可行。
+
+九、依据和定位
+
+本地资料：
+• C:\Users\shanghai\Documents\xwechat_files\wxid_tkanln7l099412_864a\msg\file\2026-11\POE_BELTPACK_V4.0.pdf，第 3 页主板电源、第 5 页主板控制、第 7 页主板数据传输。
+• C:\Users\shanghai\Documents\xwechat_files\wxid_tkanln7l099412_864a\msg\file\2026-11\adin2111.pdf，Rev.B，第 1、8、12～17、26～30、44～47、54～60、63～79、98～120 页。
+• 主程序：D:\Guodianyang\beltlink-remote-64b5f32-20260814\beltlink-remote-64b5f32-20260814\firmware\components\board\include\board.h；firmware\components\net_link\net_link.c；firmware\components\lcd_driver\lcd_driver.c；firmware\beltlink_bp\main\beltlink_bp.c / config.json；shared\protocol\beltlink_protocol.h；server\src\main.cpp。
+公开原厂资料：
+• ADI ADIN2111 产品页：https://www.analog.com/en/products/adin2111.html
+• ADI 线缆距离/链路性能说明：https://www.analog.com/en/resources/analog-dialogue/raqs/raq-issue-231.html
+• ADI no-OS 驱动参考：https://github.com/analogdevicesinc/no-OS
+• Espressif 附加以太网驱动列表：https://github.com/espressif/esp-eth-drivers
+• ESP-IDF 5.5 以太网驱动结构：https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32/api-reference/network/esp_eth.html
+
+本文件仅使用资料中的技术内容作评估；PDF 内若有操作建议或注释，不视为项目指令。最终硬件连接与性能结论以原始 Altium 网表、实板测量及目标线缆/系统压测为准。
+
+十、收到 D1～D8 后的 ADIN2111 寄存器配置建议（供驱动实现，不是已写入实板）
+
+本节只列这个项目必须配置或必须观察的寄存器。ADIN2111 另有时间戳、测试码、LED 等寄存器，不应把“全部寄存器”理解为每个都需要改。地址前缀 MAC 表示 SPI 32 位寄存器；PHY 表示通过 MDIOACC 访问的 Clause 45 16 位寄存器。下列写入值以 Rev.B 手册和 D1～D8 为前提，正式固件应按位掩码读改写、回读并记录。复位后寄存器恢复默认，必须重新初始化。
+
+A. 硬件引脚先于软件
+• SPI_CFG1/P1_LED_0（U11 pin19）：D6 选 OA SPI，应在复位采样时拉低，手册要求移除该脚 LED 驱动路径，并用不大于 4.7 kΩ 的下拉；当前 V4 PDF 的 LED/内部上拉更像通用 SPI，需硬件改版确认。开发板虽为 OA SPI，V4 主板不能直接按开发板配置推定。
+• SPI_CFG0/SDO（U11 pin43）：当前 R42 未装、芯片内部下拉，预期 PROTE=1（OA 控制读写使用补码保护）。建议维持，样机读 CONFIG0.bit5 确认。此位只读，不能靠写寄存器改变。
+• TX2P4_EN 两脚拉低仅使各 PHY 具备 2.4 Vpp 能力；最终档位看自协商。P1_SWPD_EN、P2_SWPD_EN 采样后应核对两个 PHY 真正上电。GPIO46 继电器由 MCU 控制，无 ADIN2111 寄存器代替。
+
+B. MAC/SPI 空间：建议的首版写值与用途
+1) MAC PHYID 0x01：只读识别，期望 0x0283BCA1。MAC_RST_STATUS 0x3B：只读确认时钟/复位完成。MAC RESET 0x03.bit0：仅需整体重置时置 1；它会同时重置两 PHY 和交换机，可能中断整条链，不能拿来处理单侧短暂掉线。
+2) MAC CONFIG0 0x04：推荐 OA+保护+64B chunk、首版主机收发均先用 store-and-forward。CPS[2:0]=6；PROTE.bit5 应读到 1（只读）；SEQE.bit4=0（本芯片不支持 retry）；RXCTE.bit8=0、TXCTE.bit9=0（减少驱动时序风险）；FTSE.bit7=0；若 MCU 给每个以太网帧末尾计算并附上 FCS，TXFCSVE.bit14=1，CONFIG2.CRC_APPEND=0。配置好过滤、广告、IRQ 后最后置 SYNC.bit15=1。以上条件都满足且 PROTE=1 时，最终可读值约 0x0000C026；不是无条件照抄的魔数。若决定由芯片追加 FCS，则 TXFCSVE=0、CRC_APPEND=1，需重新评估 SPI 线上数据保护；两者不可同时置 1。接收方向 MCU 仍须校验收到的 FCS 后再去除，再交 ESP 网络栈。
+3) MAC CONFIG2 0x06：线型首版令 P2_FWD_UNK2P1.bit14=1、P1_FWD_UNK2P2.bit13=1、PORT_CUT_THRU_EN.bit11=1；P2_FWD_UNK2HOST.bit12=0、P1_FWD_UNK2HOST.bit2=0，避免把过路单播全部塞给 MCU；CRC_APPEND.bit5=0（以上按 MCU 提供 FCS）；STATS_CLR_ON_RD.bit6=0，便于采样累积计数；MSPEED[1:0]=0，MDIO 桥先保持 2.5 MHz。其他位默认时约为 0x00006800。端口转发的 cut-through 是 ADIN 内部路径，与 CONFIG0 的主机收发 cut-through 是两回事。
+4) MAC ADDR_FILT_UPR/LWR，0x50～0x6F：至少两条精确目的 MAC 规则。第 0 条：本机唯一稳定 MAC，APPLY2PORT1/2=1、TO_HOST=1、TO_OTHER_PORT=0；第 1 条：FF:FF:FF:FF:FF:FF，APPLY2PORT1/2=1、TO_HOST=1、TO_OTHER_PORT=1，覆盖 ARP 和 DHCP 广播。每条先写 UPR 再写 LWR；ADDR_MSK_UPR/LWR 0x70～0x73 默认全 1 保持精确匹配。需要 IPv6/mDNS/其他组播时增加相应过滤规则并验证规则数，不能一边将未知帧只转发到另一端，一边期望未知组播自动进入本机。可以先用抓包确认项目实际所需组播。服务器当前单播流量对非本机节点会仅穿过两个端口。
+5) MAC IMASK0 0x0C / IMASK1 0x0D：掩码位“1=不触发中断”。先清旧状态，再按实际驱动启用 PHY1/PHY2 中断、OA 控制保护/头校验、Rx/Tx FIFO 溢出、FCS、ECC 等错误；RMW 保留保留位。OA 收包依赖数据 footer 的 RCA、TXC 和 INT 唤醒/轮询，不能使用只适用于通用 SPI 的 P1_RX_RDY/P2_RX_RDY 中断作为核心收包机制。STATUS0 0x08、STATUS1 0x09 用于读取并按 W1C 规则清错误；PHYINT 本身还要读每端 PHY 中断来源。
+6) MAC BUFSTS 0x0B：只读 TXC（可写入数据块信用）和 RCA（可读取数据块数）；每个 OA 接收 footer 也有 TXC/RCA、SYNC、EXST、FD、来源端口信息。实现 64B chunk 的双向 SPI DMA，不能把 TXC 当“字节数”。OA 发送头 VS[0]=目标 Port 1/2，接收 footer VS[0]=来源 Port 1/2。D3 线型且服务器只在一侧，主机默认向服务器方向的物理端口发单播/广播；若有本地邻居寻址等新需求须另定发送策略。
+7) MAC MDIOACC0～7 0x20～0x27：SPI 到 Clause 45 PHY 桥。PRTAD=1/2，DEVAD=所选 MMD，ST=00；先发地址操作，再读/写，轮询 TRDONE，检测 TAERR 与超时。它不是 ESP32-P4 旧 EMAC 的 MDC/MDIO 引脚。初始化、诊断、2.4 Vpp 配置都经此桥。
+8) MAC TX_PRI 0x35：默认 0，即 host/过路端口按近似 50/50 仲裁。16 台链中靠服务器节点会有本机与大量过路流量争出口；先保留默认并测每级延时/丢包，别直接改 100/0 或 0/100，以免饿死另一类帧。FIFO_SIZE 0x3E 默认总量 28 kB，P1↔P2 各 4 kB 等；TX_THRESH 0x34 默认用于 cut-through。三者应在满载测试有证据后再调；改 FIFO_SIZE 前必须停收发、排空/清 FIFO。
+9) MAC P1_RX_CRC_EN 0xB4 / P2_RX_CRC_EN 0xE4 默认 1，保留。P1/P2_RX_MAX_LEN 0xB6/0xE6 默认 0x618（1560 字节），足够现有音频包；P1/P2_TX_IFG 0xB0/0xE0 默认 0x0B，保留。不要为追吞吐盲目放宽 CRC、帧长或帧间隔。
+
+C. 每端 PHY Clause 45：推荐配置与回读
+10) PHY(1/2), MMD 0x1E: CRSM_STAT 0x8818：只读 SYS_RDY.bit0 应为 1，SOFT_PD_RDY.bit1 不应指示掉电；CRSM_SFT_PD_CNTRL 0x8812.bit0 应维持 0（必要时排除软件掉电）。CRSM_IRQ_STATUS/MASK 0x0010/0x0020，MMD 0x1F 的 PHY_SUBSYS_IRQ_STATUS/MASK 0x0011/0x0021：按目标链路事件选择掩码，读取两级来源并记录，先做轮询保底，确认中断清除语义后再作为唯一通知来源。
+11) PHY(1/2), MMD 0x01: B10L_PMA_STAT 0x08F7.bit12 HI_ABLE 只读，期望为 1 才允许请求高档；B10L_PMA_CNTRL 0x08F6.bit12 是关闭自协商时的直接幅值选择，正常自协商模式不写它。
+12) PHY(1/2), MMD 0x07: AN_CONTROL 0x0200 保持 AN_EN.bit12=1；AN_ADV_ABILITY_H 0x0204 的 bit13=高档能力广告、bit12=高档请求，D4 目标下在 HI_ABLE=1、每段对端支持且电气验证通过时两位设 1（从默认 0x0000 变 0x3000，其余位保留）；再置 AN_RESTART.bit9 并等待完成。不能只改本机就宣布线缆上已输出 2.4 Vpp。AN_STATUS 0x0201 的完成/Link 位、AN_LP_ADV_ABILITY_H 0x0207 的对端高档能力、AN_STATUS_EXTRA 0x8001 的 [8:7]=3（高档）、[6:5] 角色、AN_PHY_INST_STATUS 0x8030.bit1=高档运行，均为只读核验。若协商为 [8:7]=2，则实际是 1.0 Vpp，要查对端广告、strap 与供电。PMA_PMD_STAT1（MMD 0x01,0x0001）/AN_STATUS 的锁存低 Link 位应按手册连读，B10L_PMA_LINK_STAT（MMD 0x01,0x8302）同时提供瞬时 Link、远端/本端接收器与解扰器状态。
+13) PHY(1/2) 管理诊断：MMD 0x01 的 MSE_VAL 0x830B，只在 Link Up 后评估质量，越低通常越好；SLCR_ERR_SPIKE_CNT 0x8305、SLCR_ERR_MAX_ABS_VAL 0x8308 配合 SPIKE_CNTRS_CNTRL 0x800E、MAX_ABS_VALS_CNTRL 0x800F（按手册先写 0x2）可观察幅度错误尖峰，读计数会清除/重启统计。首版只用来记录趋势，不把手册示意阈值直接定为整机合格标准。TDR/线缆诊断需要 ADI 配套库、目标线缆校准与非业务窗口验证；不要在全链音频进行中盲启测试发码器/回环寄存器。
+
+十一、硬件样机网络不通时，如何用内置信息排查
+
+先给每只腰包标号 BP01～BP16，记录“靠服务器是 Port 1 还是 Port 2”、网关型号、两邻居、线缆长度、最近的电源插入器、继电器状态。每次只改变一个连接/电源条件。建议 MCU 串口提供 adin diag 命令输出下列寄存器快照；未完成驱动时用 JTAG/SPI 调试程序或 ADI 开发板做对照。失电腰包无法读寄存器，应从其上游、下游仍得电的邻居读取。
+
+步骤 0，先看物理供电和旁路：测服务器 48 V、插入器两侧电压/极性、故障点前后线上的电压及腰包 5 V/3.3 V、25 MHz、RESET#、GPIO46/U13 触点。主 DCDC 失败时确认 48 V 前送路径仍在，继电器释放后旁路两线确实接通。特别注意：ADI 开发板已有“继电器通断正确但失电后邻居 Link 不起来”的公开案例，原因是取电/送电的电感、电容改变了失电信号路径；V4 的 L4/L5、耦合/旁路器件必须按自己的实物复测，不能把开发板结论直接当成本板必然故障或必然成功。
+步骤 1，先查 SPI/复位：SPI_CFG1 复位电平必须是 OA，SPI_CFG0 与 CONFIG0.PROTE 一致。读取 PHYID=0x0283BCA1、MAC_RST_STATUS、CONFIG0.SYNC、STATUS0.RESETC；读不到/读值乱变时，先查 SPI mode、CPOL/CPHA、CS 时序、引脚互换、复位、时钟和 OA 控制帧奇偶/补码，暂不查 IP。读回 CONFIG0/CONFIG2/过滤表与期望不同，说明初始化或掉电复位后重配失败。
+步骤 2，逐段查 Link：从网关↔BP01 开始，逐只加到 BP16；每次读相邻两端各自的 AN_STATUS、AN_STATUS_EXTRA、AN_LP_ADV_ABILITY_H、AN_PHY_INST_STATUS、B10L_PMA_LINK_STAT。上游端有 Link、下游端无 Link，先定位对应线段、插入器、接头及下一台供电；Link 有但实际协商到 1.0 Vpp，查双方 2.4 Vpp 能力和广告。邻居两个端口都 Link Down，优先查中间断线/继电器、极性和电压。Link 反复波动，可看本端/远端 receiver status 与 MSE/尖峰，再替换短标准线和对端定位。
+步骤 3，Link 有但 DHCP/注册不通：观察每端 P1/P2_RX_FRM_CNT（0xA0/0xD0）、P1/P2_TX_FRM_CNT（0xA8/0xD8）在 10 秒窗口的增量，随后看 RX_CRC_ERR_CNT（0xA4/0xD4）、RX_PHY_ERR_CNT（0xA7/0xD7）、RX_DROP_FULL_CNT（0xAC/0xDC）、RX_DROP_FILT_CNT（0xAD/0xDD）。入端 RX 增加而对应出端 TX 不增、过滤丢弃增加：查 CONFIG2 和 MAC 过滤表；RX/出端 TX 均增加而服务器不见包：查下游下一段或网关；广播能过而本机拿不到 IP：查广播 TO_HOST、OA RX footer/FD、FCS、ESP netif/DHCP；本机能拿 IP 而远端不行：查中继转发规则和后续分段。建议服务器端同时抓 DHCP Discover/Offer、ARP、注册 UDP，核对 MAC→BP_ID、四链交换机 VLAN/端口隔离设置。
+步骤 4，低负载通、16 台时断续：按每级记录上述计数差分，以及 STATUS0 的 RXBOE/TXBOE/TXBUE/TXFCSE/HDRE/CDPE/LOFE、STATUS1 的 ECC/IFG，OA footer 的 FD、RCA、TXC、SYNC/EXST，另记 SPI 频率、DMA 排队时间、音频丢包、服务器发包突发和端口 Link 抖动。CRC/PHY 错误增加偏向线缆、噪声、供电、2.4 Vpp 协商；DROP_FULL/RXBOE 偏向突发和 FIFO；TXBOE/TXBUE 偏向 SPI 驱动信用/速度；DROP_FILT 偏向规则配置。接近 8.5 Mb/s 的平均线速时，4 kB 级端口 FIFO 仍可能被同一发包拍的突发打满；需要服务器 pacing 实测。
+步骤 5，专测继电器/升级：用三台或更多串接，在中间台断主 DCDC、正常重启、A/B 切换各做多次；记录两邻居 Link Down/Up 时刻、末端电压、下游 ping/UDP 音频丢包窗口和恢复时间。D5 说“本机升级瞬间不需网络”只能解释本机需求，下游在线用户可能仍需网络。切换到旁路、再回到双 PHY，预计触发至少一次甚至两次链路重建；是否可接受由业务设定的中断门槛决定。若中间台失电后 Link 不恢复，先用短线/隔离电源重做，区分旁路信号完整性与长线/供电预算问题。
+步骤 6，长线疑难：在实际线缆上对正常单段和故障旁路合并段分别测 Link、MSE、尖峰、CRC、末端电压；必要时在维护窗口用 ADI TDR 工具做开路/短路/大致距离定位，并按线缆传播速度校准。TDR 不能替代供电压降、实际带流量 CRC 和整链音频验收。
+
+建议诊断串口每条记录至少包含：时间戳、BP_ID/MAC、Port 1/2 邻居方向、继电器 GPIO 状态、SYS_RDY、SPI 模式/PROTE/SYNC、每端 Link/实际 1.0 或 2.4 Vpp/对端能力/MSE、六类帧计数增量、OA SPI 错误、DHCP IP、服务器心跳和末端电压测点。掉电事件中本机日志可能来不及写入，邻居和服务器事件日志要能拼出故障前后顺序。
+
+十二、仍需答复的两个设计前提
+
+Q1 用户已同意取消 U11 pin19 指示灯；硬件需进一步落实 ≤4.7 kΩ 下拉，样机确认 OA 模式。pin43 保护用途见第十三节，建议保持低电平并启用；正式配置应在原理图/BOM 和样机读回确认。
+Q2 用户给出候选线径 0.25～0.30 mm²、特性阻抗不受控且预计低于所称 110 Ω，并接受失电旁路合并距离过长时仍不能通信。仍需线缆料号、频率范围内阻抗/插入损耗/回波损耗、正常相邻节点最长距离、电源插入器位置及服务器 SPE 网关型号，才可给 2.4 Vpp 的可靠距离和 48 V 供电容量结论。
+
+补充原厂依据：
+• ADI EVAL-ADIN2111D1Z 用户指南，数据旁路 p7、OA SPI 默认 p8、继电器 p9、功率前送 p8/10：https://www.analog.com/media/en/technical-documentation/user-guides/eval-adin2111d1z-ug-2308.pdf
+• ADI 技术支持对失电旁路与供电耦合电感影响的答复：https://ez.analog.com/industrial-ethernet/physical-layer-devices/f/q-a/600195/daisy-chain-breaks-up-if-i-depower-one-of-my-evaluation-boards
+
+十三、补充答复：pin 43 保护、非受控低阻抗电缆与旁路验收边界
+
+1. pin 43 的“保护”是什么
+U11 pin43 同时是 SPI 数据输出 SDO 和上电采样脚 SPI_CFG0。它在复位时为低电平时，OA SPI 的控制寄存器读/写采用 32 位数据及其逐位取反的副本，使双方发现 SPI 线上的控制字翻转。比如写一个配置值时器件可检查两份是否互补；读配置值时 MCU 可检查返回值及其反码。发生错误时驱动应重试该次控制访问，记录 STATUS0.CDPE/HDRE/LOFE 等异常，必要时重新初始化。这属于 SPI 总线“配置命令传错”的检测，不是加密，也不是让线缆抗干扰、让远端以太网帧不丢。OA 数据头另有奇偶校验，帧内容应靠 MCU 附加/检查 Ethernet FCS；芯片的 OA SEQ/retry 功能不支持。保护使低频率的寄存器控制事务多传一份数据，持续音频走 OA 数据块，故通常不值得为省少量控制开销关掉保护。当前 pin43 R42=NC 且有内部下拉，建议保持保护开启，样机确认 CONFIG0.PROTE=1。
+
+2. pin 19 的修改
+用户确认 pin19 的指示灯可以取消。设计文件仍应明确：移除这条 LED 驱动路径，并按 ADIN2111 Rev.B 在 pin19 加 ≤4.7 kΩ 的外部下拉，复位采样选择 OA SPI；不是“只删灯、让引脚悬空”，因为芯片内部上拉会选回通用 SPI。上电后读寄存器并执行 OA 读写验证，再核对 pin43 的保护状态。GPIO34 还涉及 ESP32-P4 的启动/JTAG 复用，应在主板启动、调试与 U11 复位时序中实测其电平，避免误触发 U11 复位。
+
+3. 0.25～0.30 mm² 且特性阻抗低于所称 110 Ω时，2.4 Vpp 还有用吗？
+有“对线缆衰减和外界噪声增加接收余量”的潜在优势，但无法保证距离。相同负载/理想条件下，2.4 相对 1.0 Vpp 的发送幅度比为 2.4，折算约 20log10(2.4)=7.6 dB 的幅度余量。ADI 的实测综述在几种不同线缆上，2.4 Vpp 的合规距离估计普遍长于 1.0 Vpp，例如某类 24 AWG 控制线 300 m 对 500 m；这是该料号及测试条件的例子，不能外推到本项目 0.25～0.30 mm² 电缆。
+
+“低于 110 Ω”本身不能判断能否工作：10BASE-T1L 常见标称为约 100 Ω，ADI 例子中还用到 100±20 Ω 的现场总线电缆。如果 110 Ω 是本项目自定要求，请核对其出处与测量频段。真正要知道的是整段在约 0.1～20 MHz 的差分特性阻抗、插入损耗（信号越长越弱）、回波损耗（阻抗突变导致反射）、线对平衡、屏蔽/干扰环境以及接头/插入器/继电器的额外反射。线径只说明铜截面积，无法推出这些高频参数；同为 0.25 mm²，绞距、绝缘材料、结构不同，传输距离可明显不同。阻抗只是略低且沿全长稳定时，2.4 Vpp 通常仍有衰减余量优势；若阻抗沿途大幅波动、接头不连续，反射/回波损耗会限制链路，信号和反射一起变大，2.4 Vpp 不能把不合适的电缆“修成合适”。ADI 也报告过非双绞、阻抗未知的电缆在 2.4 Vpp 下 Link Down 的案例。
+
+0.25～0.30 mm² 还会增加 48 V 供电压降。若仅用 20°C 铜电阻率 0.0175 Ω·mm²/m 粗估，往返 100 m 的铜线电阻约 11.7～14 Ω，尚未计接头、电源插入器、温升及负载变化。必须把“数据通不通”和“远端还剩多少供电电压”分开测；提高 2.4 Vpp 不会弥补 DC 压降。
+
+4. 建议的最小线缆验证
+取真实候选线缆、目标接头和插入器，至少做一段 ≥100 m 的样本测量，记录实测长度/线径/阻抗随频率、插入损耗和回波损耗。然后用相同样本在 1.0 与 2.4 Vpp 下分别让两端建链，读 AN_STATUS_EXTRA 确认实际档位，测两端 MSE、尖峰、CRC/PHY 错包、连续满负载帧与温度/供电电压；逐步增加长度，找出留有稳定裕量的最大相邻节点间距。最后用真实 16 台链和电源插入器重复高峰音频测试。旁路失电后无法重建 Link 已被用户明确接受，应在规格中写成“尽力旁路，超长合并线段可能仍断链”，记录下游恢复概率/条件，不再把每种长度都旁路成功作为前提；但正常供电状态的各相邻线段仍需满足业务目标。
+
+相关原厂资料：
+• ADIN2111 Rev.B pin19/pin43 与 PROTE：https://www.analog.com/media/en/technical-documentation/data-sheets/adin2111.pdf
+• ADI 线缆距离/插入损耗/回波损耗实测综述：https://www.analog.com/en/resources/analog-dialogue/raqs/raq-issue-231.html
+• ADI 对非理想电缆在 2.4 Vpp 下 Link Down 的技术答复：https://ez.analog.com/industrial-ethernet/embedded-ethernet-switches/f/q-a/580314/link-down-issue-for-eval-adin1100-using-1-pair-cable
+
+十四、OPEN Alliance SPI 与 ADI 通用 SPI 的详细区别（对应 D6，2026-11-19 补充）
+
+先明确“普通 SPI”的含义：此处指 ADIN2111 手册中的 ADI generic SPI 帧/FIFO 协议，不是说 ESP32-P4 换了一种 SPI 控制器。两种协议都用同一组 CS、SCLK、SDI(MOSI)、SDO(MISO) 四线；由 U11 复位采样 SPI_CFG1/0 选定，之后 MCU 必须按选中的协议构造数据。两种协议的 Port 1/2 仍是各 10 Mb/s 全双工的 10BASE-T1L，交换芯片内部的 Port 1↔Port 2 转发与 SPI 模式无关。OA SPI 不会提高链上线速、电缆距离或 48 V 供电能力。
+
+1. 硬件选择和四种组合
+SPI_CFG1=0、SPI_CFG0=0：OA SPI + 控制读写保护；0/1：OA SPI 不保护；1/0：ADI 通用 SPI + CRC8；1/1：ADI 通用 SPI 不带 CRC8。V4 PDF 中 pin19 是 LED 复用且内部上拉、pin43 内部下拉/R42 未装，所以现图预期是通用 SPI + CRC8。用户已同意取消 pin19 LED，要落实 pin19 外部 ≤4.7 kΩ 下拉才会选择 OA；建议 pin43 保持低，选择 OA + 保护。模式是复位采样，不是运行时写 CONFIG0 切换。CONFIG0.PROTE 是只读反馈。
+
+2. 发一个以太网帧时的流程
+ADI 通用 SPI：驱动先看 TX_SPACE 0x32，确认 FIFO 可容纳帧；写 TX_FSIZE 0x30（含 2 字节端口/标志帧头的长度），再向 TX 0x31 突发写帧头和帧内容。收包时看 STATUS1.P1/P2_RX_RDY，再分别读 P1/P2_RX_FSIZE 和对应 RX FIFO。总线上的寄存器/FIFO 命令头以地址为核心，写入事务和读出事务依次排队；同一时刻不能向芯片送以太帧又从芯片取以太帧。这里的“半双工”只说 MCU↔芯片 SPI 数据搬运，不能误解成 SPE 线对半双工。
+OA SPI：寄存器另用 32 位控制头访问，包含 MMS 寄存器分区、地址、长度、读写标志和奇偶。以太网数据不使用 TX_FSIZE/Px_RX_FSIZE 逐帧 FIFO 流程，而是分成 8/16/32/64 字节 payload 的固定块；默认 64 字节。每个发送块在 MOSI 先加 4 字节 header，每个接收块在 MISO 后加 4 字节 footer。在同一组 SCLK 中，MCU 可向芯片送当前帧的块，同时从芯片取另一帧的块。TX 无数据时仍可送 DV=0 的空块来提供时钟，使芯片吐出 RX 数据；SPI 从机不能自行产生时钟。控制事务和数据事务之间必须释放 CS。
+
+3. 分块控制为什么让驱动更复杂
+OA header/footer 的 DV 表示本块数据是否有效，SV/EV 分别标识帧起点和终点，SWO/EBO 指明块内起止位置；一帧可能跨多个块，块中还可能有空白或连续帧。发送 header 的 VS[0] 选择 Port 1/2，接收 footer 的 VS[0] 指出来源端口。接收 footer 还有 RCA（后续可取的块数）、TXC（后续可送的块额度）、SYNC（初始化状态）、EXST/HDRB（异常）、FD（本帧应丢弃）。驱动必须管理两个方向的缓存、帧重组与信用额度，并在中断后继续泵送数据。不能把一个 64B 块等同于一个以太网包，也不能超过 TXC 仍硬塞发送数据。通用 SPI 的逐帧 FIFO 流程较直接，但要串行安排 TX 和 RX 并处理每次状态/长度读取。
+
+4. 校验机制不是“OA 有保护、普通模式没有保护”
+通用 SPI 若 SPI_CFG0=0，在地址头和寄存器控制数据上使用 CRC8；以太数据事务不是每 32 位 payload 后都有 CRC8。OA 若 SPI_CFG0=0，控制寄存器的 32 位数值连同其逐位反码传输并检查；头/尾含奇偶，数据帧由 Ethernet FCS 检查。两者都需要驱动处理错误，不是传错后必然自动重试。尤其 ADIN2111 不支持 OA 数据块的 SEQ/retry 功能，CONFIG0.SEQE 应保持 0。建议 MCU 自己为发出的以太帧计算并附加 FCS，让芯片启用 TXFCSVE、关闭 CRC_APPEND；接收时 MCU 验证 FCS，再去掉 FCS 交 ESP 网络栈。这样 SPI 上数据区的损坏也可被发现。关闭 pin43 的控制保护不会使 OA 数据块变得更快到值得优先选择。
+
+5. 吞吐量、延迟和本项目的实际瓶颈
+ADIN2111 手册明确：通用 SPI 为半双工数据搬运，要在以太网两方向都达到 10 Mb/s 的压力下工作，SCLK 需达到 25 MHz；OA SPI 在约 12～16 MHz 或更高时可实现 10 Mb/s 双向帧搬运。两者的器件 SPI 最大 SCLK 都是 25 MHz。OA 64B 块每方向要传 68B，连续满块的净载荷占比为 64/68≈94.1%；8B 块仅 8/12≈66.7%，小块可更早交付首块，但单位数据的开销更高。手册在 16 MHz、持续泵送、cut-through 等条件下列出的首块可用延迟是：64B 约 98 µs，8B 约 25.2 µs；这不是整帧端到端延迟，store-and-forward、ESP 调度、线缆和转发仍需另测。OA 不保证每个单向小包都比通用 SPI 快，其优势主要出现在 MCU 同时收发、控制总线时钟/排队时间和吞吐余量上。
+当前主程序 24 kHz、16 bit、4 ms、单声道：192B PCM + 8B 业务头 = 200B UDP 载荷。按 IPv4 无选项、无 VLAN 算，以太帧含 FCS 是 14+20+8+200+4=246B，线缆上加 8B 前导/SFD 与 12B 帧间隔为 266B，即每台连续下行 266×8×250=0.532 Mb/s，16 台是 8.512 Mb/s，约占一条 10Mb/s 链的 85.12%。本机一个 246B 帧在 OA 64B 模式占 4 块，即 4×68=272B，16MHz 下纯移位约 136 µs（不含软件与事务间隔）。如果过滤规则正确，16 台的过路帧由 ADIN2111 内部交换，本机 SPI 只搬本机帧和需要本机接收的广播/组播。换 OA 无法把近服务器线段的 8.512 Mb/s 负担降低，也无法解决该线段 FIFO 突发问题。通用 SPI 对单只腰包的约 0.532 Mb/s 下行理论上也可能够用；D6 选 OA 的合理收益是双向余量及较低所需 SPI 时钟，仍须真机测 4ms 音频时序。
+
+6. 固件实施的差别
+无论选哪种协议，旧 net_link.c 的 EMAC/RMII + esp_eth_phy_new_ip101() 都必须替换为 SPI MAC 驱动，并保留单个腰包 IP/MAC 身份、双 PHY 独立 Link 与内部交换规则。OA 驱动还需实现控制事务的 MMS/奇偶/保护、64B 数据块、双向 DMA、RCA/TXC、帧起止重组、FD/FCS、错误恢复；不能直接移植仅按通用 SPI 的 Linux 驱动数据面。ADI 官方 no-OS 有支持 ADIN2111 的 OA-TC6 传输层，可作协议实现参考，仍需适配 ESP-IDF、双端口交换和 netif。ESP-IDF P4 SPI master 支持全双工与 DMA；当前 LCD 已占 SPI2_HOST，ADIN 可考虑独立 SPI3_HOST，经 GPIO 矩阵映射 GPIO28～31，但须实测该引脚路由下的时钟/MISO 时序。DMA 缓冲使用可 DMA 内存并 32 位对齐；一个网络任务统一串行管理同一 SPI 设备，避免多个任务并发操作。先以 64B 块、主机收发 store-and-forward、内部端口间 cut-through 跑通，再测试是否有必要开启主机 cut-through 或调整块大小。
+
+7. 选型结论与验收方式
+项目既已要求 OA SPI，建议 V4 板按“pin19 下拉、pin43 保持保护、ESP32-P4 独立 SPI 总线”定版。验证应从寄存器读回和单机双向 UDP 开始，再到两台端口转发、16 台满载；记录 SPI 实际频率/事务间隔、RCA/TXC、FD/FCS、FIFO 溢出、音频丢包与 4ms 任务延迟。若 16 台满载失声，先按芯片端口帧计数判断是 10Mb/s 线段拥塞、内部出口 FIFO 丢包，还是 MCU SPI 驱动掉包；只提高 SPI 时钟不能推定能解决线段拥塞。
+
+原厂依据：ADIN2111 Rev.B 第 27、44～54、63～70 页 https://www.analog.com/media/en/technical-documentation/data-sheets/adin2111.pdf ；OPEN Alliance 10BASE-T1x MAC-PHY Serial Interface V1.1 https://opensig.org/wp-content/uploads/2023/12/OPEN_Alliance_10BASET1x_MAC-PHY_Serial_Interface_V1.1.pdf （注意 ADIN2111 手册描述实现 V1.0 功能子集）；ADI OA-TC6 no-OS 驱动 https://developer.analog.com/docs/no-os/drivers/net/oa_tc6.html ；Espressif ESP32-P4 SPI master 文档 https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32p4/api-reference/peripherals/spi_master.html 。
+
+十五、V4 主板 OA SPI 四线是否需要串联电阻（2026-11-19 补充）
+
+结论：建议修改主板原理图/PCB，为 PHY_SCLK、PHY_SDI、PHY_CS、PHY_SDO 各预留一个串联电阻焊位，首版先装 0 Ω；PCB 样机测到过冲、振铃或 EMC 问题时，再尝试 22 Ω、33 Ω等小阻值并核对时序。不能仅凭 25 MHz 时钟或原理图断言每线最终都必须装 22 Ω，也不能把 SPE 线缆的约 100 Ω 特性阻抗当成 SPI 串阻值。
+
+按 POE_BELTPACK_V4.0.pdf 主板控制第 5 页和数据传输第 7 页：ESP32-P4 GPIO28→PHY_CS→U11 pin45，GPIO29→PHY_SDI→U11 pin42，GPIO30→PHY_SCLK→U11 pin44，U11 pin43 PHY_SDO→ESP32-P4 GPIO31。四条 SPI 信号线在原理图中直接相连，没有串阻。U11 R41=100 kΩ 是 CS 到 VDDIO 的上拉，R42/R43=NC 是 SDO/SDI 到 VDDIO 的可选上拉，不是串联器件；R47 是 INT# 上拉，R50 是 RESET# 上拉。图纸不能显示 PCB 实际长度、叠层、阻抗、过孔和回流路径，尚不能确定最终装配阻值。
+
+布置位置：SCLK、SDI(MOSI)、CS 由 ESP32-P4 输出，串阻位紧靠 MCU 对应 GPIO；SDO(MISO) 由 ADIN2111 输出，串阻位紧靠 U11 pin43。不要把四个电阻全放在 MCU 旁边。每线保持一条直连的短路径和连续地参考，少过孔、少分叉和长测试支线，远离 48 V DCDC 开关节点及 SPE 模拟线路。单驱动单接收时，源端小电阻可抑制传输线反射与过冲；若走线已经短而干净，装 0 Ω 就可作为最终方案。理论选值近似为外加电阻≈PCB 单端线阻抗−输出驱动阻抗，但这两个参数当前都没有实测，故不能直接算一个固定值。
+
+优先级与时序：先观察 SCLK，因为时钟振铃造成阈值二次跨越可能被当成额外时钟；再看 SDI、CS；最后看 SDO 的返回时序。ADIN2111 Rev.B 第 8 页规定 SPI 最短周期 40 ns（即最高 25 MHz），SCLK 高/低时间各至少 17 ns；输入数据建立/保持各至少 5 ns；SDO 在 SCLK 下降沿后最多 12 ns 有效（说明书按 10 pF SDO 负载给出）。25 MHz 的半周期仅约 20 ns，MISO 还要经过 PCB 和 ESP GPIO 输入路径。故 MISO 串阻建议 0 Ω 起步，只有测到振铃才试小阻值；不能为“更稳”盲目装大电阻或较大对地电容。Espressif 官方 ESP32-P4 硬件指南建议 SPI_CLK 考虑串阻/磁珠和可选电容，其他 SPI 线也预留调整空间，但不规定本板必须使用某个阻值。电容焊位如需预留，首版不装，待 EMC 与 25 MHz 采样裕量测试后定。
+
+必须核对启动状态：U11 pin43 同时是 SDO/SPI_CFG0 复位采样脚，当前设计靠内部下拉选择保护功能。GPIO31 在 ADIN2111 复位采样期间应保持高阻或至少不强拉高；20～30 Ω 的串阻不能解决 DC 上的模式脚被 MCU 拉错的问题。pin19 的 OA 模式下拉也应先按数据手册落实。
+
+建议的样机检查：从较低 SPI 时钟读 PHYID，再升到计划的 12～16 MHz，最后试 25 MHz 上限；在 ADIN2111 的 SCLK/SDI/CS 引脚和 ESP32-P4 的 MISO 引脚用低负载探头测上升下降沿、过冲、振铃及采样位置。对照装 0/22/33 Ω时的波形、OA header/控制保护错误、长时间寄存器读写和双向音频帧/FCS 错误。以目标板实际 PCB、驱动强度、温度和供电角落条件确定 BOM；串阻不能替代好走线与完整地回流。
+
+依据：Espressif ESP32-P4 硬件指南 SPI 节 https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32p4/schematic-checklist-esp32p4.html ；ADI ADIN2111 Rev.B 第 8～9 页 https://www.analog.com/media/en/technical-documentation/data-sheets/adin2111.pdf ；ADI EVAL-ADIN2111D1Z 设计文件中的 SPI 测试接口路径采用 22 Ω，仅作试值参考，不能替代 V4 PCB 实测：https://www.analog.com/media/en/evaluation-documentation/evaluation-design-files/eval-adin2111d1z-support-pack.zip 。
+
+十六、按 2026-11-24 新增要求落实的转发、SPI 和在线诊断方案
+
+结论：三项要求均合理，纳入 V4 主板及固件实施目标。以下是设计与验收要求，不代表当前主程序已有相应驱动，也不代表整链 16 台已通过实测。
+
+1. 端口间采用直通转发（cut-through）。这是 Port 1 ↔ Port 2 的芯片内部路径，过路帧不经 ESP32-P4 的 SPI；本机送出和接收帧首版仍采用主机路径的存储转发，以保留完整帧/FCS 检查并降低 OA 驱动时序风险。初始化应在任何接收转发规则生效前设 CONFIG2(0x06).PORT_CUT_THRU_EN[11]=1，再设 P1_FWD_UNK2P2[13]、P2_FWD_UNK2P1[14] 及 ADDR_FILT 规则，最后启用收发。CONFIG0(0x04).TXCTE[9]/RXCTE[8] 首版保持 0，两组直通开关不能混为一谈。TX_THRESH(0x34).P2P_TX_THRESH[11:6] 先保留芯片默认起发阈值，若样机出现坏帧扩散或出口 FIFO 问题，再测量后调整；TX_PRI(0x35).TX_HOST_PRI[2:0] 先保留默认 50/50 仲裁，压测中同时观察本机发包与过路帧是否争用同一出口。直通降低转发等待时间，但不增加 10BASE-T1L 线速，也不消除每级出口排队。按第十一节的端口计数核对逐跳 RX/TX/CRC/DROP 增量，验证满载下游稳定性。
+
+2. 优先使用 OPEN Alliance SPI（OA-TC6），以 MCU↔ADIN2111 数据通道持续双向收发能力达到每方向 10 Mb/s 为性能目标。V4 主板 U11 pin19/SPI_CFG1 必须取消指示灯复用并明确下拉，U11 pin43/SPI_CFG0 在复位采样时保持低电平、MCU GPIO31 保持高阻，以启用受保护控制事务；上电读回模式/PROTE 后才启动数据面。ESP32-P4 驱动按 64B chunk、全双工 DMA、RCA/TXC 信用、帧重组、FCS 和错误恢复实现，使用专用网络任务服务 INT 和收发队列。先以 12～16 MHz 实测，再在信号完整性与温度/电压角落允许时提高，绝不把手册的理想吞吐声明直接当成本板结果。验收分别记录：(a) 每个 SPE 端口 10 Mb/s 全双工链路及双向错误率；(b) SPI 同时 TX/RX 的有效以太帧搬运速率、时钟/事务间隔、CPU 占用和丢帧；(c) 项目实际 246B 帧、4 ms 节拍、16 台单链下的音频丢包和端口 FIFO。10 Mb/s 是物理比特率或 MAC 帧搬运目标，UDP/音频有效载荷因以太网、IP/UDP、OA 块头尾等开销必低于该值；16 台过路流量也不应全部搬到每台 MCU 的 SPI。
+
+3. 在线诊断要实时处理异常，但串口只输出有用事件和限频摘要。INT# ISR 仅通知网络任务，不在 ISR 内访问 SPI/MDIO 或 printf。任务读取 STATUS0(0x08)、STATUS1(0x09) 和 PHY 子系统中断来源，按手册 W1C 清除；OA footer 同时处理 EXST/HDRB/SYNC/RCA/TXC/FD，异常发生时记录时间、BP_ID、端口、寄存器原值与软件累计次数。每个端口通过 MDIOACC0～7(0x20～0x27) 读取 AN_STATUS(0x0201)、AN_STATUS_EXTRA(0x8001)、AN_PHY_INST_STATUS(0x8030)、B10L_PMA_LINK_STAT(0x8302) 等，检测 Link/协商/电平变化。周期采样 P1/P2 的 RX/TX、CRC/PHY 错、DROP_FULL/DROP_FILT 和 MSE_VAL(0x830B)；CONFIG2.STATS_CLR_ON_RD[6] 保持 0，以前后差值和回绕处理得出速率/错误增量。SLCR 尖峰等读后清零寄存器单独设采样窗口，不在普通状态轮询中随手读取；TDR、回环、测试码等可能影响业务的功能仅在维护窗口执行。
+
+诊断输出策略：Link 升降、SPI/OA 保护或同步错误、FIFO 溢出、CRC/PHY 错误突增、继电器动作、网络恢复立即入事件队列，低优先级日志任务合并同类事件并限速输出；正常状态每 5 秒输出一次简短摘要，现场可关闭或调整周期，并提供按需转储最近事件/完整计数的命令。记录端口号、Link、协商电平、每 5 秒 RX/TX/CRC/PHY/DROP 增量、MSE、RCA/TXC 异常、继电器状态、DHCP/服务器可达状态。禁止逐包串口打印，以免阻塞 4 ms 音频任务和 OA SPI 服务。诊断结果应能区分：线缆/链路错误、转发规则过滤、出口 FIFO 拥塞、SPI 驱动失步、本机 IP/服务器故障。失电腰包无法自行打印，须结合前后相邻腰包与服务器时间戳定位。
+
+本节待硬件样机验收：确认 pin19/pin43 复位电平与 SPI 波形；单机 OA 双向速率；两台逐跳直通和继电器失电跨接；16 台长时间满载、最远线段、插电器与继电器动作时的丢包/恢复时间。只有实测通过后，才把性能目标标为已实现。
+
+依据：ADIN2111 Rev.B 第 15、47～54、64～65、72 页及 PHY 诊断寄存器表 https://www.analog.com/media/en/technical-documentation/data-sheets/adin2111.pdf ；ADI OA-TC6 驱动及事件/统计接口 https://developer.analog.com/docs/no-os/drivers/net/oa_tc6.html 。
